@@ -20,8 +20,35 @@
 
 #import "BSManagedDocument.h"
 
+// changes not tested on non-ARC.
+#if !__has_feature(objc_arc)
+#error Need automatic reference counting to compile this.
+#endif
+
+@interface BSManagedDocument()
+
+@property (readonly,strong) NSManagedObjectContext* parentContext;
+
+@end
 
 @implementation BSManagedDocument
+
+@synthesize parentContext = _parentContext;
+
+-(NSManagedObjectContext *)parentContext
+{
+    @synchronized(self) {
+        if (!_parentContext) {
+            NSPersistentStoreCoordinator *coordinator = [[NSPersistentStoreCoordinator alloc] initWithManagedObjectModel:[self managedObjectModel]];
+            _parentContext = [[self.class.managedObjectContextClass alloc] initWithConcurrencyType:NSPrivateQueueConcurrencyType];
+            [_parentContext performBlockAndWait:^{
+                [_parentContext setUndoManager:nil]; // no point in it supporting undo
+                [_parentContext setPersistentStoreCoordinator:coordinator];
+            }];
+        }
+        return _parentContext;
+    }
+}
 
 #pragma mark UIManagedDocument-inspired methods
 
@@ -37,6 +64,7 @@
     return fileURL;
 }
 
+
 - (NSManagedObjectContext *)managedObjectContext;
 {
     if (!_managedObjectContext)
@@ -46,6 +74,10 @@
         if ([NSManagedObjectContext instancesRespondToSelector:@selector(initWithConcurrencyType:)])
         {
             context = [[self.class.managedObjectContextClass alloc] initWithConcurrencyType:NSMainQueueConcurrencyType];
+            [context performBlock:^{
+                [context setParentContext:self.parentContext];
+            }];
+            _managedObjectContext = context;
         }
         else
         {
@@ -61,9 +93,9 @@
                 });
             }
         }
-        
-        [self setManagedObjectContext:context];
+    
 #if ! __has_feature(objc_arc)
+        [_managedObjectContext retain];
         [context release];
 #endif
     }
@@ -71,47 +103,6 @@
     return _managedObjectContext;
 }
 
-- (void)setManagedObjectContext:(NSManagedObjectContext *)context;
-{
-    // Setup the rest of the stack for the context
-
-    NSPersistentStoreCoordinator *coordinator = [[NSPersistentStoreCoordinator alloc] initWithManagedObjectModel:[self managedObjectModel]];
-    
-    // Need 10.7+ to support parent context
-    if ([context respondsToSelector:@selector(setParentContext:)])
-    {
-        NSManagedObjectContext *parentContext = [[self.class.managedObjectContextClass alloc] initWithConcurrencyType:NSPrivateQueueConcurrencyType];
-        
-        [parentContext performBlockAndWait:^{
-            [parentContext setUndoManager:nil]; // no point in it supporting undo
-            [parentContext setPersistentStoreCoordinator:coordinator];
-        }];
-        
-        [context setParentContext:parentContext];
-
-#if !__has_feature(objc_arc)
-        [parentContext release];
-#endif
-    }
-    else
-    {
-        [context setPersistentStoreCoordinator:coordinator];
-    }
-
-#if __has_feature(objc_arc)
-    _managedObjectContext = context;
-#else
-    [context retain];
-    [_managedObjectContext release]; _managedObjectContext = context;
-#endif
-    
-
-#if !__has_feature(objc_arc)
-    [coordinator release];  // context hangs onto it for us
-#endif
-    
-    [super setUndoManager:[context undoManager]]; // has to be super as we implement -setUndoManager: to be a no-op
-}
 
 // Having this method is a bit of a hack for Sandvox's benefit. I intend to remove it in favour of something neater
 + (Class)managedObjectContextClass; { return [NSManagedObjectContext class]; }
@@ -146,7 +137,7 @@
         storeOptions = mutableOptions;
     }
     
-	NSPersistentStoreCoordinator *storeCoordinator = [[self managedObjectContext] persistentStoreCoordinator];
+	NSPersistentStoreCoordinator *storeCoordinator = [self.parentContext persistentStoreCoordinator];
 	
     _store = [storeCoordinator addPersistentStoreWithType:[self persistentStoreTypeForFileType:fileType]
                                             configuration:configuration
@@ -216,23 +207,19 @@
         // NSPersistentDocument states: "Revert resets the document’s managed object context. Objects are subsequently loaded from the persistent store on demand, as with opening a new document."
         // I've found for atomic stores that -reset only rolls back to the last loaded or saved version of the store; NOT what's actually on disk
         // To force it to re-read from disk, the only solution I've found is removing and re-adding the persistent store
-        NSManagedObjectContext *context = self.managedObjectContext;
-        if ([context respondsToSelector:@selector(parentContext)])
+        if ([NSManagedObjectContext instancesRespondToSelector:@selector(parentContext)])
         {
             // In my testing, HAVE to do the removal using parent's private queue. Otherwise, it deadlocks, trying to acquire a _PFLock
-            NSManagedObjectContext *parent = context.parentContext;
-            while (parent)
-            {
-                context = parent;   parent = context.parentContext;
-            }
-            
+            NSManagedObjectContext *parent = self.parentContext;
+        
             __block BOOL result;
-            [context performBlockAndWait:^{
-                result = [context.persistentStoreCoordinator removePersistentStore:_store error:outError];
+            [parent performBlockAndWait:^{
+                result = [parent.persistentStoreCoordinator removePersistentStore:_store error:outError];
             }];
         }
         else
         {
+            NSManagedObjectContext *context = self.managedObjectContext;
             if (![context.persistentStoreCoordinator removePersistentStore:_store error:outError])
             {
                 return NO;
@@ -665,7 +652,7 @@ originalContentsURL:(NSURL *)originalContentsURL
     if ([context respondsToSelector:@selector(parentContext)])
     {
         [self unblockUserInteraction];
-        
+
         NSManagedObjectContext *parent = [context parentContext];
         
         [parent performBlockAndWait:^{
