@@ -74,9 +74,7 @@
         if ([NSManagedObjectContext instancesRespondToSelector:@selector(initWithConcurrencyType:)])
         {
             context = [[self.class.managedObjectContextClass alloc] initWithConcurrencyType:NSMainQueueConcurrencyType];
-            [context performBlock:^{
-                [context setParentContext:self.parentContext];
-            }];
+            [context setParentContext:self.parentContext];
             _managedObjectContext = context;
         }
         else
@@ -647,13 +645,11 @@ originalContentsURL:(NSURL *)originalContentsURL
     
     
     // On 10.6 saving is just one call, all on main thread. 10.7+ have to work on the context's private queue
-    NSManagedObjectContext *context = [self managedObjectContext];
-    
-    if ([context respondsToSelector:@selector(parentContext)])
+    if ([NSManagedObjectContext instancesRespondToSelector:@selector(parentContext)])
     {
         [self unblockUserInteraction];
 
-        NSManagedObjectContext *parent = [context parentContext];
+        NSManagedObjectContext *parent = self.parentContext;
         
         [parent performBlockAndWait:^{
             result = [self preflightURL:storeURL thenSaveContext:parent error:error];
@@ -672,6 +668,7 @@ originalContentsURL:(NSURL *)originalContentsURL
     }
     else
     {
+        NSManagedObjectContext *context = [self managedObjectContext];
         result = [self preflightURL:storeURL thenSaveContext:context error:error];
     }
     
