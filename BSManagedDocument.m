@@ -93,7 +93,7 @@
                 });
             }
         }
-    
+        [super setUndoManager:[context undoManager]]; // has to be super as we implement -setUndoManager: to be a no-op
 #if ! __has_feature(objc_arc)
         [_managedObjectContext retain];
         [context release];
