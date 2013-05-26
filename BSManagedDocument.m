@@ -448,8 +448,8 @@ originalContentsURL:(NSURL *)originalContentsURL
     // To have gotten here on any thread but the main one is a programming error and unworkable, so we throw an exception
     if (!_additionalContent)
     {
-		if ([NSThread isMainThread])
-        {
+    // This may be invoked from a background thread if the user chose to save anyway in response to a "file modified by another application" prompt. Thus don't just raise an exception, but simply suck it up.
+        BOOL (^saveContextBlock)() = ^{
             _additionalContent = [self additionalContentForURL:inURL saveOperation:saveOp error:error];
             if (!_additionalContent) return NO;
             
@@ -473,11 +473,19 @@ originalContentsURL:(NSURL *)originalContentsURL
             // Finish up. Don't worry, _additionalContent was never retained on this codepath, so doesn't need to be released
             _additionalContent = nil;
             return result;
+        };
+
+        if ([NSThread isMainThread])
+        {
+            return saveContextBlock();
         }
         else
         {
-            [NSException raise:NSInvalidArgumentException format:@"Attempt to write document on background thread (operation %u), bypassing usual save methods, to: %@", (unsigned)saveOp, [inURL path]];
-            return NO;
+            BOOL __block saveResult = NO;
+            dispatch_sync(dispatch_get_main_queue(), ^{
+                saveResult = saveContextBlock();
+            });
+            return saveResult;
         }
     }
     
