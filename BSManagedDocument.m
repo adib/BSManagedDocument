@@ -290,8 +290,7 @@
 
 - (id)contentsForURL:(NSURL *)url ofType:(NSString *)typeName saveOperation:(NSSaveOperationType)saveOperation error:(NSError **)outError;
 {
-    NSAssert([NSThread isMainThread], @"Somehow -%@ has been called off of the main thread", NSStringFromSelector(_cmd));
-    
+    NSAssert([NSThread isMainThread], @"Somehow -%@ has been called off of the main thread (operation %u to: %@)", NSStringFromSelector(_cmd), (unsigned)saveOperation, [url path]);
     
     // Grab additional content that a subclass might provide
     id additionalContent = [self additionalContentForURL:url saveOperation:saveOperation error:outError];
@@ -541,7 +540,7 @@
     // At first glance, -performActivityWithSynchronousWaiting:usingBlock: seems the right way to do that. But turns out:
     //  * super is documented to use -performAsynchronousFileAccessUsingBlock: internally
     //  * Autosaving (as tested on 10.7) is declared to the system as *file access*, rather than an *activity*, so a regular save won't block the UI waiting for autosave to finish
-    //  * If autosaving while quitting, calling -performActivity… here resuls in deadlock
+    //  * If autosaving while quitting, calling -performActivity… here results in deadlock
     [self performAsynchronousFileAccessUsingBlock:^(void (^fileAccessCompletionHandler)(void)) {
         
         NSAssert(_contents == nil, @"Can't begin save; another is already in progress. Perhaps you forgot to wrap the call inside of -performActivityWithSynchronousWaiting:usingBlock:");
@@ -569,18 +568,46 @@
         // Kick off async saving work
         [super saveToURL:url ofType:typeName forSaveOperation:saveOperation completionHandler:^(NSError *error) {
             
-            // Cleanup
+            // If the save failed, it might be an error the user can recover from.
+			// e.g. the dreaded "file modified by another application"
+			// NSDocument handles this by presenting the error, which includes recovery options
+			// If the user does choose to Save Anyway, the doc system leaps straight onto secondary thread to
+			// accomplish it, without calling this method again.
+			// Thus we want to hang onto _contents until the overall save operation is finished, rather than
+			// just this method. The best way I can see to do that is to make the cleanup its own activity, so
+			// it runs after the end of the current one. Unfortunately there's no guarantee anyone's been
+            // thoughtful enough to register this as an activity (autosave, I'm looking at you), so only rely
+            // on it if there actually is a recoverable error
+			if ([error recoveryAttempter])
+            {
+                [self performActivityWithSynchronousWaiting:NO usingBlock:^(void (^activityCompletionHandler)(void)) {
+                    
 #if !__has_feature(objc_arc)
-            [_contents release];
+                    [_contents release];
 #endif
-            _contents = nil;
-            
+                    _contents = nil;
+                    
+                    activityCompletionHandler();
+                }];
+            }
+            else
+            {
+#if !__has_feature(objc_arc)
+                [_contents release];
+#endif
+                _contents = nil;
+            }
+			
+			
+            // Clean up our custom autosaved contents directory if appropriate
             if (!error &&
                 (saveOperation == NSSaveOperation || saveOperation == NSAutosaveInPlaceOperation || saveOperation == NSSaveAsOperation))
             {
                 [self deleteAutosavedContentsTempDirectory];
             }
             
+			
+			// And can finally declare we're done
             fileAccessCompletionHandler();
             if (completionHandler) completionHandler(error);
         }];
@@ -643,24 +670,15 @@
 			}
 			
 			
-            // This may be invoked from a background thread if the user chose to save anyway in response to a "file modified by another application" prompt. Thus take care to invoke it from the main thread.
-            BOOL __block result = NO;
-            void (^writerBlock)() = ^{
             // NSDocument attempts to write a copy of the document out at a temporary location.
             // Core Data cannot support this, so we override it to save directly.
-                result = [self writeToURL:absoluteURL
-                                        ofType:typeName
-                              forSaveOperation:saveOperation
-                           originalContentsURL:[self fileURL]
-                                         error:outError];
-            };
-            if ([NSThread isMainThread]) {
-                writerBlock();
-            } else {
-                dispatch_sync(dispatch_get_main_queue(), writerBlock);
-            }
+            BOOL result = [self writeToURL:absoluteURL
+                                    ofType:typeName
+                          forSaveOperation:saveOperation
+                       originalContentsURL:[self fileURL]
+                                     error:outError];
         
-            
+        
             if (!result)
             {
                 // Clean up backup if one was made
