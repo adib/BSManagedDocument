@@ -383,9 +383,26 @@
             
             // Instead, we shall fallback to copying the store to the new location
             // -writeStoreContent… routine will adjust store URL for us
-            if (![[NSFileManager defaultManager] copyItemAtURL:[self.class persistentStoreURLForDocumentURL:self.mostRecentlySavedFileURL]
-                                                         toURL:storeURL
-                                                         error:error]) return NO;
+            NSURL* mostRecentlySavedFileURL = self.mostRecentlySavedFileURL;
+            if(mostRecentlySavedFileURL)
+            {
+                NSURL* persistentStoreURL = [self.class persistentStoreURLForDocumentURL:mostRecentlySavedFileURL];
+                BOOL copyResult = NO;
+                if (NSAppKitVersionNumber >= 1265)
+                {
+                    // in 10.9+, the persistentStore URL may not be the only file that's involved due to write-ahead logging. So copy the directory instead.
+                    NSURL* persistentStoreContainerURL = [persistentStoreURL URLByDeletingLastPathComponent];
+                    copyResult = [[NSFileManager defaultManager] copyItemAtURL:persistentStoreContainerURL toURL:storeURL error:error];
+                }
+                else
+                {
+                    copyResult = [[NSFileManager defaultManager] copyItemAtURL:persistentStoreURL toURL:storeURL error:error];
+                }
+                if (!copyResult)
+                {
+                    return NO;
+                }
+            }
         }
         else
         {
