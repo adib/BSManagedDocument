@@ -457,6 +457,22 @@
                         return [self writeBackupToURL:url error:error];
                     }
                 }
+                else if (saveOperation == NSAutosaveAsOperation)
+                {
+                    // Special case for autosaving to iCloud's "Mobile Documents" folder.
+                    if (![storeURL checkResourceIsReachableAndReturnError:NULL])
+                    {
+                        result = [self createPackageDirectoriesAtURL:url
+                                                              ofType:typeName
+                                                    forSaveOperation:saveOperation
+                                                 originalContentsURL:originalContentsURL
+                                                               error:error];
+                        if (!result) return NO;
+                        
+                        // Fake a placeholder file ready for the store to save over
+                        if (![[NSData data] writeToURL:storeURL options:0 error:error]) return NO;
+                    }
+                }
             }
             else
             {
@@ -732,6 +748,17 @@
             
             return result;
         }
+        else if(saveOperation == NSAutosaveAsOperation && ![self autosavedContentsFileURL])
+        {
+            // When using iCloud, this is when NSDocument writes to "~/Library/Mobile Documents/<ubiquitous-id>/Documents/<package-name>/<store-content>/<persistent-store> that may not exist yet.
+            BOOL result = [self writeToURL:absoluteURL
+                                    ofType:typeName
+                          forSaveOperation:saveOperation
+                       originalContentsURL:[self fileURL]
+                                     error:outError];
+            
+            return result;
+        }
     }
     
     // Other situations are basically fine to go through the regular channels
@@ -904,7 +931,7 @@ originalContentsURL:(NSURL *)originalContentsURL
     
     if (![coordinator setURL:storeURL forPersistentStore:_store])
     {
-        NSLog(@"Unable to set store URL");
+        NSLog(@"Unable to set store URL to: %@",absoluteURL);
     }
 }
 
