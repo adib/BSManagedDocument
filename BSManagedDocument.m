@@ -28,8 +28,6 @@
 
 @implementation BSManagedDocument
 
-+ (BOOL) isUbiquitous { return NO; }
-
 
 -(void) persistentStoreCoordinatorDidImportUbiquitousContentChanges:(NSNotification*) notification
 {
@@ -154,7 +152,7 @@
     // Setup the rest of the stack for the context
 
     NSNotificationCenter* nc = [NSNotificationCenter defaultCenter];
-    BOOL isUbiquitous = [[self class] isUbiquitous];
+    BOOL isUbiquitous = [[self class] usesUbiquitousStorage];
     
     if (isUbiquitous)
     {

@@ -269,11 +269,6 @@
 -(void)setUndoManager:(NSUndoManager *)undoManager;
 -(void)setHasUndoManager:(BOOL)hasUndoManager;
 
-/**
- Override and return YES to enable iCloud support.
- */
-+ (BOOL) isUbiquitous;
-
 
 -(void) persistentStoreCoordinatorDidImportUbiquitousContentChanges:(NSNotification*) notification;
 -(void) persistentStoreCoordinatorStoresWillChange:(NSNotification*) notification;
