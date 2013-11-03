@@ -92,6 +92,14 @@
     // nothing here yet – placeholder for subclasses to override.
 }
 
+#pragma mark NSObject
+
+-(void)dealloc
+{
+    // catch-all removeObserver
+    [[NSNotificationCenter defaultCenter] removeObserver:self];
+}
+
 
 #pragma mark UIManagedDocument-inspired methods
 
