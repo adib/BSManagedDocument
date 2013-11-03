@@ -28,6 +28,71 @@
 
 @implementation BSManagedDocument
 
++ (BOOL) isUbiquitous { return NO; }
+
+
+-(void) persistentStoreCoordinatorDidImportUbiquitousContentChanges:(NSNotification*) notification
+{
+    NSManagedObjectContext* moc = [self managedObjectContext];
+    [moc performBlock:^{
+        [moc mergeChangesFromContextDidSaveNotification:notification];
+    }];
+}
+
+
+-(void) persistentStoreCoordinatorStoresWillChange:(NSNotification*) notification
+{
+    NSDictionary* userInfo = notification.userInfo;
+    NSSet* addedStores = [NSSet setWithArray:userInfo[NSAddedPersistentStoresKey]];
+    NSSet* removedStores = [NSSet setWithArray:userInfo[NSRemovedPersistentStoresKey]];
+    if (![addedStores isEqualToSet:removedStores])
+    {
+        // only do it if there's an actual change to the stores.
+        NSManagedObjectContext* moc = [self managedObjectContext];
+        [moc performBlockAndWait:^{
+            NSError* mocError = nil;
+            if ([moc hasChanges])
+            {
+                [moc save:&mocError];
+                if (mocError)
+                {
+                    NSLog(@"Store change - save error on main context: %@",mocError);
+                }
+            }
+            if ([moc respondsToSelector:@selector(parentContext)])
+            {
+                NSManagedObjectContext* parentMoc = [moc parentContext];
+                [parentMoc performBlockAndWait:^{
+                    NSError* parentError = nil;
+                    if ([parentMoc hasChanges])
+                    {
+                        [parentMoc save:&parentError];
+                    }
+                    if (parentError)
+                    {
+                        NSLog(@"Store change - save error on parent context: %@",parentError);
+                    }
+                    if (!parentError)
+                    {
+                        [parentMoc reset];
+                    }
+                }];
+            }
+            if (!mocError)
+            {
+                [moc reset];
+            }
+        }];
+    }
+}
+
+
+-(void) persistentStoreCoordinatorStoresDidChange:(NSNotification*) notification
+{
+    // nothing here yet – placeholder for subclasses to override.
+}
+
+
 #pragma mark UIManagedDocument-inspired methods
 
 + (NSString *)storeContentName; { return @"StoreContent"; }
@@ -80,8 +145,37 @@
 {
     // Setup the rest of the stack for the context
 
+    NSNotificationCenter* nc = [NSNotificationCenter defaultCenter];
+    BOOL isUbiquitous = [[self class] isUbiquitous];
+    
+    if (isUbiquitous)
+    {
+        if (&NSPersistentStoreDidImportUbiquitousContentChangesNotification != NULL)
+        {
+            [nc removeObserver:self name:NSPersistentStoreDidImportUbiquitousContentChangesNotification object:nil];
+        }
+        if (&NSPersistentStoreCoordinatorStoresWillChangeNotification != NULL)
+        {
+            [nc removeObserver:self name:NSPersistentStoreCoordinatorStoresWillChangeNotification object:nil];
+        }
+    }
+    [nc removeObserver:self name:NSPersistentStoreCoordinatorStoresDidChangeNotification object:nil];
+
     NSPersistentStoreCoordinator *coordinator = [[NSPersistentStoreCoordinator alloc] initWithManagedObjectModel:[self managedObjectModel]];
     
+    if (isUbiquitous)
+    {
+        if (&NSPersistentStoreDidImportUbiquitousContentChangesNotification != NULL)
+        {
+            [nc addObserver:self selector:@selector(persistentStoreCoordinatorDidImportUbiquitousContentChanges:) name:NSPersistentStoreDidImportUbiquitousContentChangesNotification object:coordinator];
+        }
+        if (&NSPersistentStoreCoordinatorStoresWillChangeNotification != NULL)
+        {
+            [nc addObserver:self selector:@selector(persistentStoreCoordinatorStoresWillChange:) name:NSPersistentStoreCoordinatorStoresWillChangeNotification object:coordinator];
+        }
+    }
+    [nc addObserver:self selector:@selector(persistentStoreCoordinatorStoresDidChange:) name:NSPersistentStoreCoordinatorStoresDidChangeNotification object:coordinator];
+
     // Need 10.7+ to support parent context
     if ([context respondsToSelector:@selector(setParentContext:)])
     {
@@ -335,7 +429,7 @@
                                                                error:error];
             if (!result) return NO;
         }
-        else if (saveOperation == NSSaveAsOperation)
+        else if (saveOperation == NSSaveAsOperation || saveOperation == NSAutosaveAsOperation)
         {
             result = [self createPackageDirectoriesAtURL:url
                                                   ofType:typeName
@@ -455,22 +549,6 @@
                         
                         // Then copy that across to the final URL
                         return [self writeBackupToURL:url error:error];
-                    }
-                }
-                else if (saveOperation == NSAutosaveAsOperation)
-                {
-                    // Special case for autosaving to iCloud's "Mobile Documents" folder.
-                    if (![storeURL checkResourceIsReachableAndReturnError:NULL])
-                    {
-                        result = [self createPackageDirectoriesAtURL:url
-                                                              ofType:typeName
-                                                    forSaveOperation:saveOperation
-                                                 originalContentsURL:originalContentsURL
-                                                               error:error];
-                        if (!result) return NO;
-                        
-                        // Fake a placeholder file ready for the store to save over
-                        if (![[NSData data] writeToURL:storeURL options:0 error:error]) return NO;
                     }
                 }
             }
@@ -876,17 +954,29 @@ originalContentsURL:(NSURL *)originalContentsURL
 
 - (BOOL)preflightURL:(NSURL *)storeURL thenSaveContext:(NSManagedObjectContext *)context error:(NSError **)error;
 {
+    NSLog(@"preflightURL: %@",storeURL);
     // Preflight the save since it tends to crash upon failure pre-Mountain Lion. rdar://problem/10609036
     // Could use this code on 10.7+:
     //NSNumber *writable;
     //result = [URL getResourceValue:&writable forKey:NSURLIsWritableKey error:&error];
     
-    if ([[NSFileManager defaultManager] isWritableFileAtPath:[storeURL path]])
+    // When synced on iCloud, the persistent store file may not exist yet – thus just check the folder name.
+    NSString* checkPath = [[storeURL path]stringByDeletingLastPathComponent];
+    if ([[NSFileManager defaultManager] isWritableFileAtPath:checkPath])
     {
-        // Ensure store is saving to right location
-        if ([context.persistentStoreCoordinator setURL:storeURL forPersistentStore:_store])
+        // when Core Data on iCloud is enabled, the persistent store will save to a CoreDataUbiquitySupport subdirectory.
+        const BOOL ubiquity = _store.options[NSPersistentStoreUbiquitousContentNameKey] != nil;
+        if (ubiquity && _store.URL != nil)
         {
             return [context save:error];
+        }
+        else
+        {
+            // Ensure store is saving to right location
+            if ([context.persistentStoreCoordinator setURL:storeURL forPersistentStore:_store])
+            {
+                return [context save:error];
+            }
         }
     }
     
