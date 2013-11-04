@@ -40,48 +40,41 @@
 
 -(void) persistentStoreCoordinatorStoresWillChange:(NSNotification*) notification
 {
-    NSDictionary* userInfo = notification.userInfo;
-    NSSet* addedStores = [NSSet setWithArray:userInfo[NSAddedPersistentStoresKey]];
-    NSSet* removedStores = [NSSet setWithArray:userInfo[NSRemovedPersistentStoresKey]];
-    if (![addedStores isEqualToSet:removedStores])
-    {
-        // only do it if there's an actual change to the stores.
-        NSManagedObjectContext* moc = [self managedObjectContext];
-        [moc performBlockAndWait:^{
-            NSError* mocError = nil;
-            if ([moc hasChanges])
+    NSManagedObjectContext* moc = [self managedObjectContext];
+    [moc performBlockAndWait:^{
+        NSError* mocError = nil;
+        if ([moc hasChanges])
+        {
+            [moc save:&mocError];
+            if (mocError)
             {
-                [moc save:&mocError];
-                if (mocError)
+                NSLog(@"Store change - save error on main context: %@",mocError);
+            }
+        }
+        if ([moc respondsToSelector:@selector(parentContext)])
+        {
+            NSManagedObjectContext* parentMoc = [moc parentContext];
+            [parentMoc performBlockAndWait:^{
+                NSError* parentError = nil;
+                if ([parentMoc hasChanges])
                 {
-                    NSLog(@"Store change - save error on main context: %@",mocError);
+                    [parentMoc save:&parentError];
                 }
-            }
-            if ([moc respondsToSelector:@selector(parentContext)])
-            {
-                NSManagedObjectContext* parentMoc = [moc parentContext];
-                [parentMoc performBlockAndWait:^{
-                    NSError* parentError = nil;
-                    if ([parentMoc hasChanges])
-                    {
-                        [parentMoc save:&parentError];
-                    }
-                    if (parentError)
-                    {
-                        NSLog(@"Store change - save error on parent context: %@",parentError);
-                    }
-                    if (!parentError)
-                    {
-                        [parentMoc reset];
-                    }
-                }];
-            }
-            if (!mocError)
-            {
-                [moc reset];
-            }
-        }];
-    }
+                if (parentError)
+                {
+                    NSLog(@"Store change - save error on parent context: %@",parentError);
+                }
+                if (!parentError)
+                {
+                    [parentMoc reset];
+                }
+            }];
+        }
+        if (!mocError)
+        {
+            [moc reset];
+        }
+    }];
 }
 
 
