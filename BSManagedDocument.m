@@ -94,7 +94,16 @@
 
 #pragma mark UIManagedDocument-inspired methods
 
-+ (NSString *)storeContentName; { return @"StoreContent"; }
++ (NSString *)storeContentName
+{
+    if ([self respondsToSelector:@selector(usesUbiquitousStorage)] && [self usesUbiquitousStorage])
+    {
+        return @"StoreContent.nosync";
+    }
+    return @"StoreContent";
+}
+
+
 + (NSString *)persistentStoreName; { return @"persistentStore"; }
 
 + (NSURL *)persistentStoreURLForDocumentURL:(NSURL *)fileURL;
