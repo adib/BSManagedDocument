@@ -491,8 +491,14 @@
                 if (NSAppKitVersionNumber >= 1265)
                 {
                     // in 10.9+, the persistentStore URL may not be the only file that's involved due to write-ahead logging. So copy the directory instead.
-                    NSURL* persistentStoreContainerURL = [persistentStoreURL URLByDeletingLastPathComponent];
-                    copyResult = [[NSFileManager defaultManager] copyItemAtURL:persistentStoreContainerURL toURL:storeURL error:error];
+
+                    NSURL* persistentStoreContainerURL = [persistentStoreURL    URLByDeletingLastPathComponent];
+                    NSURL* targetStoreContainerURL = [storeURL URLByDeletingLastPathComponent];
+                
+                    NSFileManager* fm = [NSFileManager defaultManager];
+                    // remove the target dir first.
+                    [fm removeItemAtURL:targetStoreContainerURL error:error];
+                    copyResult = [fm copyItemAtURL:persistentStoreContainerURL toURL:targetStoreContainerURL error:error];
                 }
                 else
                 {
