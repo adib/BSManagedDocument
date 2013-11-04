@@ -154,7 +154,8 @@
     // Setup the rest of the stack for the context
 
     NSNotificationCenter* nc = [NSNotificationCenter defaultCenter];
-    BOOL isUbiquitous = [[self class] usesUbiquitousStorage];
+    const Class myClass = [self class];
+    BOOL isUbiquitous = [myClass respondsToSelector:@selector(usesUbiquitousStorage)] && [myClass usesUbiquitousStorage];
     
     if (isUbiquitous)
     {
@@ -187,7 +188,7 @@
     // Need 10.7+ to support parent context
     if ([context respondsToSelector:@selector(setParentContext:)])
     {
-        NSManagedObjectContext *parentContext = [[self.class.managedObjectContextClass alloc] initWithConcurrencyType:NSPrivateQueueConcurrencyType];
+        NSManagedObjectContext *parentContext = [[myClass.managedObjectContextClass alloc] initWithConcurrencyType:NSPrivateQueueConcurrencyType];
         
         [parentContext performBlockAndWait:^{
             [parentContext setUndoManager:nil]; // no point in it supporting undo
