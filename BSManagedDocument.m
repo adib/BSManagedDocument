@@ -96,10 +96,6 @@
 
 + (NSString *)storeContentName
 {
-    if ([self respondsToSelector:@selector(usesUbiquitousStorage)] && [self usesUbiquitousStorage])
-    {
-        return @"StoreContent.nosync";
-    }
     return @"StoreContent";
 }
 
