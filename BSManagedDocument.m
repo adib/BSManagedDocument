@@ -86,11 +86,8 @@
     if ([context respondsToSelector:@selector(setParentContext:)])
     {
         NSManagedObjectContext *parentContext = [[self.class.managedObjectContextClass alloc] initWithConcurrencyType:NSPrivateQueueConcurrencyType];
-        
-        [parentContext performBlockAndWait:^{
-            [parentContext setUndoManager:nil]; // no point in it supporting undo
-            [parentContext setPersistentStoreCoordinator:coordinator];
-        }];
+        parentContext.undoManager = nil; // no point in it supporting undo
+        parentContext.persistentStoreCoordinator = coordinator;
         
         [context setParentContext:parentContext];
 
@@ -143,14 +140,6 @@
                                      storeOptions:(NSDictionary *)storeOptions
                                             error:(NSError **)error
 {
-	// On 10.8+, the coordinator whinges but doesn't fail if you leave out this key and the file turns out to be read-only. Supplying a value makes it fail with a (not very helpful) error when the store is read-only
-    if (![storeOptions objectForKey:NSReadOnlyPersistentStoreOption])
-    {
-        NSMutableDictionary *mutableOptions = [NSMutableDictionary dictionaryWithDictionary:storeOptions];
-        [mutableOptions setObject:@NO forKey:NSReadOnlyPersistentStoreOption];
-        storeOptions = mutableOptions;
-    }
-    
 	NSPersistentStoreCoordinator *storeCoordinator = [[self managedObjectContext] persistentStoreCoordinator];
 	
     _store = [storeCoordinator addPersistentStoreWithType:[self persistentStoreTypeForFileType:fileType]
@@ -165,7 +154,35 @@
 	return (_store != nil);
 }
 
+- (BOOL)configurePersistentStoreCoordinatorForURL:(NSURL *)storeURL
+                                           ofType:(NSString *)fileType
+                                            error:(NSError **)error
+{
+    // On 10.8+, the coordinator whinges but doesn't fail if you leave out NSReadOnlyPersistentStoreOption and the file turns out to be read-only. Supplying a value makes it fail with a (not very helpful) error when the store is read-only
+    BOOL readonly = ([self respondsToSelector:@selector(isInViewingMode)] && [self isInViewingMode]);
+    
+    NSDictionary *options = @{
+                              // For apps linked against 10.9+ and supporting 10.6 still, use the old
+                              // style journal. Since the journal lives alongside the persistent store
+                              // I figure there's a chance it could be copied from a new Mac to an old one
+                              // https://developer.apple.com/library/mac/releasenotes/DataManagement/WhatsNew_CoreData_OSX/index.html
+#if MAC_OS_X_VERSION_MAX_ALLOWED >= MAC_OS_X_VERSION_10_9 && MAC_OS_X_VERSION_MIN_REQUIRED <= MAC_OS_X_VERSION_10_6
+                              NSSQLitePragmasOption : @{ @"journal_mode" : @"DELETE" },
+#endif
+                              
+                              NSReadOnlyPersistentStoreOption : @(readonly)
+                              };
+
+    return [self configurePersistentStoreCoordinatorForURL:storeURL
+                                                    ofType:fileType
+                                        modelConfiguration:nil
+                                              storeOptions:options
+                                                     error:error];
+}
+
 - (NSString *)persistentStoreTypeForFileType:(NSString *)fileType { return NSSQLiteStoreType; }
+
+- (BOOL)readAdditionalContentFromURL:(NSURL *)absoluteURL error:(NSError **)error; { return YES; }
 
 - (id)additionalContentForURL:(NSURL *)absoluteURL saveOperation:(NSSaveOperationType)saveOperation error:(NSError **)error;
 {
@@ -274,14 +291,14 @@
         return NO;
     }
     
-    BOOL readonly = ([self respondsToSelector:@selector(isInViewingMode)] && [self isInViewingMode]);
-    
     BOOL result = [self configurePersistentStoreCoordinatorForURL:storeURL
                                                            ofType:typeName
-                                               modelConfiguration:nil
-                                                     storeOptions:@{NSReadOnlyPersistentStoreOption : @(readonly)}
                                                             error:outError];
     
+    if (result)
+    {
+        result = [self readAdditionalContentFromURL:absoluteURL error:outError];
+    }
     
     return result;
 }
@@ -293,15 +310,20 @@
     NSAssert([NSThread isMainThread], @"Somehow -%@ has been called off of the main thread (operation %u to: %@)", NSStringFromSelector(_cmd), (unsigned)saveOperation, [url path]);
     
     // Grab additional content that a subclass might provide
+    if (outError) *outError = nil;  // unusually for me, be forgiving of subclasses which forget to fill in the error
     id additionalContent = [self additionalContentForURL:url saveOperation:saveOperation error:outError];
-    if (!additionalContent) return nil;
+    if (!additionalContent)
+    {
+        if (outError) NSAssert(*outError != nil, @"-additionalContentForURL:saveOperation:error: failed with a nil error");
+        return nil;
+    }
     
     
     // On 10.7+, save the main context, ready for parent to be saved in a moment
     NSManagedObjectContext *context = self.managedObjectContext;
     if ([context respondsToSelector:@selector(parentContext)])
     {
-        if (![context save:outError]) additionalContent = nil;
+        if (![context save:outError]) return nil;
     }
     
     
@@ -324,8 +346,6 @@
             
             result = [self configurePersistentStoreCoordinatorForURL:storeURL
                                                               ofType:typeName
-                                                  modelConfiguration:nil
-                                                        storeOptions:nil
                                                                error:error];
             if (!result) return NO;
         }
@@ -547,13 +567,11 @@
         
         
         // Stash contents temporarily into an ivar so -writeToURL:… can access it from the worker thread
-        NSError *error = nil;   // unusually for me, be forgiving of subclasses which forget to fill in the error
+        NSError *error;
         _contents = [self contentsForURL:url ofType:typeName saveOperation:saveOperation error:&error];
         
         if (!_contents)
         {
-            NSAssert(error, @"-additionalContentForURL:ofType:forSaveOperation:error: failed with a nil error");
-            
             // The docs say "be sure to invoke super", but by my understanding it's fine not to if it's because of a failure, as the filesystem hasn't been touched yet.
             fileAccessCompletionHandler();
             if (completionHandler) completionHandler(error);
